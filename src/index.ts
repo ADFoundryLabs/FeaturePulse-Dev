@@ -1,8 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { Webhooks } from '@octokit/webhooks';
-// FIX 1: Added .js extensions to these imports
-import { fetchPullRequestDiff, fetchIntentFile, postComment } from './services/github.js';
+// FIX 1: Added .js extensions and createCheckRun to imports
+import { fetchPullRequestDiff, fetchIntentFile, postComment, createCheckRun } from './services/github.js';
 import { analyzeWithAI } from './services/ai.js';
 import { db } from './db/index.js'; 
 
@@ -72,6 +72,21 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
         const analysis = await analyzeWithAI(intent, diff);
         console.log("✅ AI Analysis Complete:", analysis.decision);
 
+        // 4. The Gatekeeper: Create a Check Run
+        console.log("🛡️ Posting Check Run...");
+        const sha = pull_request.head.sha; // We need the specific commit hash
+
+        await createCheckRun(
+            installation.id,
+            repository.owner.login,
+            repository.name,
+            sha,
+            analysis.decision,
+            analysis.summary
+        );
+        console.log("✅ Check Run posted!");
+
+        // Optional: Still post a comment so detailed breakdown is visible in chat
         const commentBody = `
 ## ⚡ FeaturePulse Report
 
@@ -95,8 +110,6 @@ ${analysis.summary}
         console.log("✅ Comment posted to GitHub!");
 
         // FIX 2: Added 'head_sha' fallback to satisfy types if needed
-        const sha = pull_request.head.sha;
-
         await db.query(
             `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score) 
              VALUES ((SELECT id FROM installations WHERE github_installation_id=$1), $2, $3, $4, $5)`,

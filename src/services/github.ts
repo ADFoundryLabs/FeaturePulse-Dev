@@ -90,3 +90,37 @@ export async function postComment(
         body,
     });
 }
+
+/**
+ * createCheckRun
+ * Creates a formal "Pass/Fail" check on the PR.
+ */
+export async function createCheckRun(
+  installationId: number,
+  owner: string,
+  repo: string,
+  headSha: string,
+  decision: 'APPROVE' | 'WARN' | 'BLOCK',
+  summary: string
+) {
+  const octokit = await getClient(installationId);
+
+  // FIX: Explicitly tell TypeScript this variable can ONLY be one of these 3 strings
+  let conclusion: "success" | "failure" | "neutral" = 'neutral';
+  
+  if (decision === 'APPROVE') conclusion = 'success';
+  if (decision === 'BLOCK') conclusion = 'failure';
+
+  await octokit.rest.checks.create({
+    owner,
+    repo,
+    name: 'FeaturePulse Guard',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: conclusion,
+    output: {
+      title: `AI Decision: ${decision}`,
+      summary: summary,
+    }
+  });
+}
