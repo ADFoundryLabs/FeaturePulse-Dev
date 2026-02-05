@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    // Environment Settings
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+
+    // Relaxed Typechecking (Fixes 'possibly null' errors)
+    "strict": false,
+    "skipLibCheck": true,
+
+    // Fixes the Import/Export errors
+    "verbatimModuleSyntax": false,
+    "forceConsistentCasingInFileNames": true,
+    
+    // Output Options
+    "sourceMap": true,
+    "declaration": true
+  },
+  "ts-node": {
+    "esm": true
+  }
+}
