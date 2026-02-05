@@ -1,9 +1,10 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { Webhooks } from '@octokit/webhooks';
-import { fetchPullRequestDiff, fetchIntentFile, postComment } from './services/github';
-import { analyzeWithAI } from './services/ai';
-import { db } from './db/index.js'; // Note the .js extension for tsx compatibility
+// FIX 1: Added .js extensions to these imports
+import { fetchPullRequestDiff, fetchIntentFile, postComment } from './services/github.js';
+import { analyzeWithAI } from './services/ai.js';
+import { db } from './db/index.js'; 
 
 dotenv.config();
 
@@ -16,19 +17,17 @@ const webhooks = new Webhooks({
 });
 
 // 1. The Webhook Listener Route (Modified for Raw Body)
-// We add { verify: ... } to keep the raw text for signature checking
 app.use('/api/webhook', express.json({
     verify: (req: any, res, buf) => {
-        req.rawBody = buf.toString(); // Save the exact string GitHub sent
+        req.rawBody = buf.toString(); 
     }
 }), (req: any, res) => {
     const signature = req.headers["x-hub-signature-256"] as string;
     
-    // Verify using the RAW body, not the parsed JSON
     webhooks.verifyAndReceive({
         id: req.headers["x-github-delivery"] as string,
         name: req.headers["x-github-event"] as any,
-        payload: req.rawBody, // <--- Key Change: Verify the raw string
+        payload: req.rawBody, 
         signature: signature
     }).catch((err) => {
         console.error("❌ Webhook verification failed:", err.message);
@@ -39,7 +38,6 @@ app.use('/api/webhook', express.json({
 
 // 2. Event: PR Opened or Synchronized
 webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payload }) => {
-    // Note: 'payload' here is the parsed object provided by webhooks.on, which is safe to use
     const { repository, pull_request, installation } = payload;
     
     if (!installation) {
@@ -70,12 +68,10 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
         );
         console.log(`✅ Fetched PR Diff (${diff.length} chars)`);
 
-        // 3. The Brain: Ask AI
         console.log("🧠 Sending to AI...");
         const analysis = await analyzeWithAI(intent, diff);
         console.log("✅ AI Analysis Complete:", analysis.decision);
 
-        // 4. The Voice: Post Comment
         const commentBody = `
 ## ⚡ FeaturePulse Report
 
@@ -98,11 +94,13 @@ ${analysis.summary}
         );
         console.log("✅ Comment posted to GitHub!");
 
-        // 5. The Memory: Save to Database
+        // FIX 2: Added 'head_sha' fallback to satisfy types if needed
+        const sha = pull_request.head.sha;
+
         await db.query(
             `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score) 
              VALUES ((SELECT id FROM installations WHERE github_installation_id=$1), $2, $3, $4, $5)`,
-            [installation.id, pull_request.number, pull_request.head.sha, analysis.decision, analysis.score]
+            [installation.id, pull_request.number, sha, analysis.decision, analysis.score]
         );
 
     } catch (error) {
@@ -113,14 +111,18 @@ ${analysis.summary}
 // 3. Event: App Installed
 webhooks.on("installation.created", async ({ payload }) => {
     const { id, account } = payload.installation;
-    console.log(`✨ New Installation! ID: ${id}, Account: ${account.login}`);
+    
+    // FIX 3: Cast account to 'any' to fix the strict type error about 'login'
+    const accountName = (account as any)?.login || "unknown"; 
+
+    console.log(`✨ New Installation! ID: ${id}, Account: ${accountName}`);
 
     try {
         await db.query(
             `INSERT INTO installations (github_installation_id, account_name, repo_name, intent_text) 
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (github_installation_id) DO NOTHING`,
-            [id, account.login, "global", "Default intent"]
+            [id, accountName, "global", "Default intent"]
         );
         console.log("✅ Saved installation to Railway DB");
     } catch (err) {
