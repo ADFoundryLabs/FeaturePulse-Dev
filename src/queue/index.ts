@@ -48,6 +48,12 @@ export function createRedisConnection() {
   return new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    // Upstash's free tier resets idle TCP connections (ECONNRESET). ioredis
+    // reconnects automatically via retryStrategy. Cap at 2 s so the worker
+    // resumes quickly after a reset rather than backing off for 30+ seconds.
+    retryStrategy(times) {
+      return Math.min(times * 200, 2000);
+    },
   });
 }
 
