@@ -177,6 +177,11 @@ export async function postComment(
 /**
  * createCheckRun
  * Creates a formal "Pass/Fail" check on the PR.
+ *
+ * @param externalId  Optional GitHub delivery ID. When provided, it is stored
+ *                    as the check run's external_id so that hasCheckRunForDelivery
+ *                    can detect an already-posted check run on BullMQ job retry,
+ *                    preventing duplicates.
  */
 export async function createCheckRun(
   installationId: number,
@@ -184,7 +189,8 @@ export async function createCheckRun(
   repo: string,
   headSha: string,
   decision: 'APPROVE' | 'WARN' | 'BLOCK',
-  summary: string
+  summary: string,
+  externalId?: string
 ) {
   const octokit = await getClient(installationId);
 
@@ -204,6 +210,76 @@ export async function createCheckRun(
     output: {
       title: `AI Decision: ${decision}`,
       summary: summary,
-    }
+    },
+    ...(externalId ? { external_id: externalId } : {}),
   });
+}
+
+/**
+ * hasCheckRunForDelivery
+ * Returns true if a FeaturePulse Guard check run with the given external_id
+ * (GitHub delivery ID) already exists for this SHA. Used by the worker to
+ * skip re-posting the check run when a BullMQ job retries after a partial
+ * completion.
+ */
+export async function hasCheckRunForDelivery(
+  installationId: number,
+  owner: string,
+  repo: string,
+  headSha: string,
+  deliveryId: string
+): Promise<boolean> {
+  const octokit = await getClient(installationId);
+  const { data } = await octokit.rest.checks.listForRef({
+    owner,
+    repo,
+    ref: headSha,
+    check_name: 'FeaturePulse Guard',
+    per_page: 50,
+  });
+  return data.check_runs.some(
+    (run: { external_id?: string | null }) => run.external_id === deliveryId
+  );
+}
+
+/**
+ * featurePulseCommentFingerprint
+ * Returns the hidden HTML comment string embedded in every FeaturePulse PR
+ * comment. Used as a per-SHA fingerprint so findFeaturePulseComment can
+ * detect an already-posted comment on retry without scanning comment bodies
+ * for user-visible text (which could change across versions).
+ */
+export function featurePulseCommentFingerprint(headSha: string): string {
+  return `<!-- featurepulse:${headSha} -->`;
+}
+
+/**
+ * findFeaturePulseComment
+ * Returns true if a FeaturePulse comment bearing the SHA fingerprint already
+ * exists on the PR. Guards against duplicate comments when a job retries after
+ * the comment was posted but before the job was marked complete.
+ */
+export async function findFeaturePulseComment(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string
+): Promise<boolean> {
+  const octokit = await getClient(installationId);
+  const fingerprint = featurePulseCommentFingerprint(headSha);
+
+  // List up to 100 comments — sufficient for the expected comment volume on
+  // any single PR. If a PR somehow has > 100 comments we may miss the
+  // fingerprint; acceptable edge case for a dev-focused tool.
+  const { data } = await octokit.rest.issues.listComments({
+    owner,
+    repo,
+    issue_number: prNumber,
+    per_page: 100,
+  });
+
+  return data.some((comment: { body?: string }) =>
+    comment.body?.includes(fingerprint)
+  );
 }

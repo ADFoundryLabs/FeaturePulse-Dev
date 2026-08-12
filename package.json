@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "worker": "tsx src/worker.ts"
   },
   "repository": {
     "type": "git",
@@ -22,8 +23,10 @@
   "homepage": "https://github.com/ADFoundryLabs/FeaturePulse-Dev#readme",
   "dependencies": {
     "@octokit/plugin-throttling": "^9.6.1",
+    "bullmq": "^6.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "ioredis": "^6.0.0",
     "octokit": "^5.0.5",
     "pg": "^8.18.0"
   },

@@ -36,3 +36,27 @@ CREATE TABLE analysis_logs (
     used_intent_file BOOLEAN NOT NULL DEFAULT FALSE
     -- -----------------------------------------------------------------------
 );
+
+-- ---------------------------------------------------------------------------
+-- Phase 4 migration: idempotency constraint for BullMQ retry safety
+--
+-- Run these two statements IN ORDER against the live DB before deploying
+-- the Phase 4 worker. The preflight DELETE is safe to run even on a clean
+-- DB (it becomes a no-op when no duplicates exist).
+--
+-- Step 1 — remove any duplicate (installation_id, commit_sha) pairs,
+--           keeping the highest-id row (most complete — has any back-filled
+--           time_to_merge / human_override values).
+-- DELETE FROM analysis_logs
+-- WHERE id NOT IN (
+--     SELECT MAX(id)
+--     FROM analysis_logs
+--     GROUP BY installation_id, commit_sha
+-- );
+--
+-- Step 2 — add the uniqueness constraint so the ON CONFLICT clause in the
+--           worker INSERT can rely on it for deduplication on retry.
+-- ALTER TABLE analysis_logs
+--     ADD CONSTRAINT uq_analysis_logs_installation_commit
+--     UNIQUE (installation_id, commit_sha);
+-- ---------------------------------------------------------------------------

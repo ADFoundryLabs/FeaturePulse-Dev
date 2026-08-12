@@ -4,7 +4,9 @@ import { Webhooks } from '@octokit/webhooks';
 // FIX 1: Added .js extensions and createCheckRun to imports
 import { fetchPullRequestDiff, fetchIntentFile, postComment, createCheckRun } from './services/github.js';
 import { analyzeWithAI } from './services/ai.js';
-import { db } from './db/index.js'; 
+import { db } from './db/index.js';
+// Phase 4: BullMQ queue for decoupled PR analysis
+import { prAnalysisQueue } from './queue/index.js';
 
 dotenv.config();
 
@@ -37,125 +39,42 @@ app.use('/api/webhook', express.json({
 });
 
 // 2. Event: PR Opened or Synchronized
-webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payload }) => {
+// ---------------------------------------------------------------------------
+// Phase 4: The analysis chain (fetch intent → fetch diff → AI → check run →
+// comment → DB insert) now runs in the worker process (src/worker.ts).
+//
+// The webhook handler's only job is to enqueue the job and return 200.
+// This is identical in behaviour to the previous fire-and-forget pattern,
+// except that a process crash mid-analysis no longer silently discards the
+// job — BullMQ will retry it on worker restart.
+//
+// The x-github-delivery header is carried as deliveryId and used as
+// external_id on the GitHub check run so the worker can detect a
+// previously-posted check run on retry (no duplicate check runs).
+// ---------------------------------------------------------------------------
+webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payload, id: deliveryId }) => {
     const { repository, pull_request, installation } = payload;
-    
+
     if (!installation) {
         console.error("❌ No installation ID found in webhook");
         return;
     }
 
-    console.log(`\n👀 Analyzing PR #${pull_request.number} in ${repository.full_name}...`);
-
-    try {
-        const intent = await fetchIntentFile(
-            installation.id, 
-            repository.owner.login, 
-            repository.name
-        );
-
-        if (!intent) {
-            console.log("⚠️ No intent.md found. Posting neutral check run and skipping analysis.");
-            // PRODUCT DECISION (flagged): Option (a) implemented — post a neutral check run so the
-            // PR author sees a visible signal. Confirm whether this should instead be option (b)
-            // (hard-block) or remain as a neutral skip. See featurepulse-remediation-directive.md item 4.
-            const sha = pull_request.head.sha;
-            await createCheckRun(
-                installation.id,
-                repository.owner.login,
-                repository.name,
-                sha,
-                'WARN',   // maps to 'neutral' conclusion in createCheckRun
-                'No intent.md or .featurepulse/intent.md found in this repository. FeaturePulse analysis was skipped.'
-            );
-
-            // Phase 3 telemetry: log the skipped-analysis event with used_intent_file=false
-            // so dashboard queries can distinguish intent-driven runs from skipped ones.
-            const instResultNoIntent = await db.query(
-                `SELECT id FROM installations WHERE github_installation_id=$1`,
-                [installation.id]
-            );
-            if (instResultNoIntent.rows.length === 0) {
-                console.error(`❌ Installation row not found for github_installation_id=${installation.id}. Skipping DB insert.`);
-            } else {
-                await db.query(
-                    `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score, used_intent_file)
-                     VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [instResultNoIntent.rows[0].id, pull_request.number, sha, 'WARN', null, false]
-                );
-            }
-            return;
+    await prAnalysisQueue.add(
+        // Job name (for BullMQ dashboard visibility; doesn't affect processing)
+        `pr-analysis:${repository.full_name}#${pull_request.number}@${pull_request.head.sha.slice(0, 7)}`,
+        {
+            deliveryId,
+            githubInstallationId: installation.id,
+            owner: repository.owner.login,
+            repo: repository.name,
+            prNumber: pull_request.number,
+            headSha: pull_request.head.sha,
+            prCreatedAt: pull_request.created_at,
         }
-        console.log("✅ Found Intent Rules");
+    );
 
-        const diff = await fetchPullRequestDiff(
-            installation.id, 
-            repository.owner.login, 
-            repository.name, 
-            pull_request.number
-        );
-        console.log(`✅ Fetched PR Diff (${diff.length} chars)`);
-
-        console.log("🧠 Sending to AI...");
-        const analysis = await analyzeWithAI(intent, diff);
-        console.log("✅ AI Analysis Complete:", analysis.decision);
-
-        // 4. The Gatekeeper: Create a Check Run
-        console.log("🛡️ Posting Check Run...");
-        const sha = pull_request.head.sha; // We need the specific commit hash
-
-        await createCheckRun(
-            installation.id,
-            repository.owner.login,
-            repository.name,
-            sha,
-            analysis.decision,
-            analysis.summary
-        );
-        console.log("✅ Check Run posted!");
-
-        // Optional: Still post a comment so detailed breakdown is visible in chat
-        const commentBody = `
-## ⚡ FeaturePulse Report
-
-**Decision:** ${analysis.decision} ${analysis.decision === 'APPROVE' ? '✅' : analysis.decision === 'BLOCK' ? '🛑' : '⚠️'}
-**Score:** ${analysis.score}/100
-
-**Summary:**
-${analysis.summary}
-
----
-*Analyzed by FeaturePulse AI*
-        `;
-
-        await postComment(
-            installation.id,
-            repository.owner.login,
-            repository.name,
-            pull_request.number,
-            commentBody
-        );
-        console.log("✅ Comment posted to GitHub!");
-
-        // FIX 2: Fetch installation row first; skip insert (log error) if not found to avoid null FK
-        const instResult = await db.query(
-            `SELECT id FROM installations WHERE github_installation_id=$1`,
-            [installation.id]
-        );
-        if (instResult.rows.length === 0) {
-            console.error(`❌ Installation row not found for github_installation_id=${installation.id}. Skipping DB insert to avoid null FK.`);
-        } else {
-            // Phase 3 telemetry: include used_intent_file=true (intent was found and used)
-            await db.query(
-                `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score, used_intent_file)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
-                [instResult.rows[0].id, pull_request.number, sha, analysis.decision, analysis.score, true]
-            );
-        }
-
-    } catch (error) {
-        console.error("❌ Error fetching PR data:", error);
-    }
+    console.log(`📥 PR #${pull_request.number} in ${repository.full_name} queued for analysis (delivery ${deliveryId}).`);
 });
 
 // 3. Event: App Installed

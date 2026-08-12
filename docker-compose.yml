@@ -1,0 +1,15 @@
+# Phase 4: local Redis for BullMQ job queue.
+# Start before running the backend: docker compose up -d redis
+# Stop: docker compose down
+#
+# In production (Railway) set REDIS_URL to your Redis add-on URL;
+# this file is for local development only.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    # No auth — matches the default REDIS_URL=redis://localhost:6379 in .env.example.
+    # Add a password here + REDIS_URL=redis://:password@localhost:6379 if your
+    # local environment requires it.
+    restart: unless-stopped
