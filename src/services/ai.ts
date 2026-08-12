@@ -156,7 +156,7 @@ export async function analyzeWithAI(intent: string, diff: string): Promise<AIAna
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    model: "google/gemini-2.0-flash-001", // Free & Fast model
+                    model: "cohere/north-mini-code:free", // Free & Fast model
                     messages: [{ role: "user", content: prompt }],
                     response_format: { type: "json_object" } // Forces JSON output
                 }),
