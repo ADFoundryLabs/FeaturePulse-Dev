@@ -165,8 +165,12 @@ export async function analyzeWithAI(intent: string, diff: string): Promise<AIAna
 
         const data = await response.json();
         
+        if (!response.ok) {
+            throw new Error(`OpenRouter API Error (${response.status}): ${JSON.stringify(data)}`);
+        }
+        
         if (!data.choices || !data.choices[0]) {
-            throw new Error("Invalid AI response structure");
+            throw new Error("Invalid AI response structure: " + JSON.stringify(data));
         }
 
         const content = data.choices[0].message.content;
