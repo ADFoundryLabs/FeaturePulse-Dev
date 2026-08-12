@@ -18,7 +18,8 @@ import { Pool } from '@neondatabase/serverless';
 // The Pool shim exposes the same .query(text, params?) → QueryResult interface
 // as pg.Pool, so callers (page.tsx etc.) need no changes.
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL_POOLED,
+  // Fallback to direct DATABASE_URL if the pooled URL isn't configured yet
+  connectionString: process.env.DATABASE_URL_POOLED || process.env.DATABASE_URL,
   // No ssl option needed: Neon requires TLS and ?sslmode=require in the URL
   // handles it. Neon uses a valid CA-signed certificate — rejectUnauthorized:false
   // is not needed (and would be a security regression).
