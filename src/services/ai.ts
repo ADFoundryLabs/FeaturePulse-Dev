@@ -38,6 +38,11 @@ export async function analyzeWithAI(intent: string, diff: string): Promise<AIAna
     `;
 
     try {
+        // FIX 3: AbortController timeout — cancel the request after 25 s so a hung provider
+        // doesn't leak the request forever. The catch block below returns the safe fallback.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 25_000);
+
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -48,8 +53,10 @@ export async function analyzeWithAI(intent: string, diff: string): Promise<AIAna
                 model: "google/gemini-2.0-flash-001", // Free & Fast model
                 messages: [{ role: "user", content: prompt }],
                 response_format: { type: "json_object" } // Forces JSON output
-            })
+            }),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         const data = await response.json();
         

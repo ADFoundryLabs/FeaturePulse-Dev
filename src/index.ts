@@ -9,7 +9,7 @@ import { db } from './db/index.js';
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001; // Default 3001 to avoid collision with Next.js dashboard on 3000
 
 // Initialize Webhook Handler
 const webhooks = new Webhooks({
@@ -55,7 +55,19 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
         );
 
         if (!intent) {
-            console.log("⚠️ No intent.md found. Skipping analysis.");
+            console.log("⚠️ No intent.md found. Posting neutral check run and skipping analysis.");
+            // PRODUCT DECISION (flagged): Option (a) implemented — post a neutral check run so the
+            // PR author sees a visible signal. Confirm whether this should instead be option (b)
+            // (hard-block) or remain as a neutral skip. See featurepulse-remediation-directive.md item 4.
+            const sha = pull_request.head.sha;
+            await createCheckRun(
+                installation.id,
+                repository.owner.login,
+                repository.name,
+                sha,
+                'WARN',   // maps to 'neutral' conclusion in createCheckRun
+                'No intent.md or .featurepulse/intent.md found in this repository. FeaturePulse analysis was skipped.'
+            );
             return;
         }
         console.log("✅ Found Intent Rules");
@@ -109,12 +121,20 @@ ${analysis.summary}
         );
         console.log("✅ Comment posted to GitHub!");
 
-        // FIX 2: Added 'head_sha' fallback to satisfy types if needed
-        await db.query(
-            `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score) 
-             VALUES ((SELECT id FROM installations WHERE github_installation_id=$1), $2, $3, $4, $5)`,
-            [installation.id, pull_request.number, sha, analysis.decision, analysis.score]
+        // FIX 2: Fetch installation row first; skip insert (log error) if not found to avoid null FK
+        const instResult = await db.query(
+            `SELECT id FROM installations WHERE github_installation_id=$1`,
+            [installation.id]
         );
+        if (instResult.rows.length === 0) {
+            console.error(`❌ Installation row not found for github_installation_id=${installation.id}. Skipping DB insert to avoid null FK.`);
+        } else {
+            await db.query(
+                `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [instResult.rows[0].id, pull_request.number, sha, analysis.decision, analysis.score]
+            );
+        }
 
     } catch (error) {
         console.error("❌ Error fetching PR data:", error);
