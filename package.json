@@ -6,8 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "worker": "tsx src/worker.ts"
+    "dev": "tsx src/index.ts"
   },
   "repository": {
     "type": "git",

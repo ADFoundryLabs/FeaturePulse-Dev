@@ -5,8 +5,9 @@ import { Webhooks } from '@octokit/webhooks';
 import { fetchPullRequestDiff, fetchIntentFile, postComment, createCheckRun } from './services/github.js';
 import { analyzeWithAI } from './services/ai.js';
 import { db } from './db/index.js';
-// Phase 4: BullMQ queue for decoupled PR analysis
+// BullMQ queue (enqueue-side) + worker consumer (runs in-process on Render free tier)
 import { prAnalysisQueue } from './queue/index.js';
+import { startWorker } from './worker.js';
 
 dotenv.config();
 
@@ -16,6 +17,12 @@ const port = process.env.PORT || 3001; // Default 3001 to avoid collision with N
 // Initialize Webhook Handler
 const webhooks = new Webhooks({
   secret: process.env.WEBHOOK_SECRET as string,
+});
+
+// 0. Health check — must be first, no DB or Redis dependency.
+//    External pingers (e.g. UptimeRobot) hit this to keep Render from idling.
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
 });
 
 // 1. The Webhook Listener Route (Modified for Raw Body)
@@ -40,13 +47,15 @@ app.use('/api/webhook', express.json({
 
 // 2. Event: PR Opened or Synchronized
 // ---------------------------------------------------------------------------
-// Phase 4: The analysis chain (fetch intent → fetch diff → AI → check run →
-// comment → DB insert) now runs in the worker process (src/worker.ts).
+// The analysis chain (fetch intent → fetch diff → AI → check run → comment
+// → DB insert) runs inside the BullMQ Worker started below in app.listen().
 //
 // The webhook handler's only job is to enqueue the job and return 200.
-// This is identical in behaviour to the previous fire-and-forget pattern,
-// except that a process crash mid-analysis no longer silently discards the
-// job — BullMQ will retry it on worker restart.
+// The Worker is event-driven and never blocks the HTTP request/response cycle
+// — collapsing to one process does NOT reintroduce the pre-Phase-4 pattern.
+//
+// Job durability is unchanged: jobs live in Redis. A crash-and-restart will
+// pick up any in-flight job that hadn't been ACKed as completed.
 //
 // The x-github-delivery header is carried as deliveryId and used as
 // external_id on the GitHub check run so the worker can detect a
@@ -240,4 +249,11 @@ webhooks.on("pull_request_review.submitted", async ({ payload }) => {
 
 app.listen(port, () => {
   console.log(`🚀 FeaturePulse Backend running on port ${port}`);
+
+  // Start the BullMQ worker in-process (Render free tier — single process).
+  // Called here (inside the listen callback) so the HTTP server is fully ready
+  // before the worker starts pulling jobs. The Worker is event-driven: it polls
+  // Redis for jobs independently of incoming HTTP requests and never blocks
+  // webhook response handling.
+  startWorker();
 });

@@ -1,10 +1,12 @@
 // src/queue/index.ts
 // ---------------------------------------------------------------------------
-// Phase 4: BullMQ queue definition and job type.
+// BullMQ queue definition and job type.
 //
 // Single queue "pr-analysis" for pull_request.opened / pull_request.synchronize
 // events. The webhook handler enqueues here and returns 200 immediately;
-// the worker (src/worker.ts) consumes jobs in a separate process.
+// startWorker() (src/worker.ts) consumes jobs — runs in the same process as
+// index.ts on Render's free tier, or as a standalone process when invoked via
+// `npm run worker`.
 //
 // Job data carries everything the worker needs so it never has to re-read
 // from the webhook payload after the job is created.

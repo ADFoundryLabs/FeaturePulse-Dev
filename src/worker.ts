@@ -1,24 +1,22 @@
 // src/worker.ts
 // ---------------------------------------------------------------------------
-// Phase 4: BullMQ worker process.
+// BullMQ worker — PR analysis consumer.
 //
-// Run alongside the main server (src/index.ts) as a separate process:
-//   npm run worker          (dev: tsx src/worker.ts)
-//   node dist/worker.js     (prod)
+// Can be used two ways:
+//   1. Embedded (Render free tier / single process):
+//        import { startWorker } from './worker.js';
+//        startWorker();   // called from src/index.ts after app.listen()
 //
-// Processes jobs from the "pr-analysis" queue for pull_request.opened and
-// pull_request.synchronize events. The webhook handler (src/index.ts) enqueues
-// jobs and returns 200 immediately; this worker does all the work.
+//   2. Standalone (separate process, e.g. paid worker tier):
+//        npm run worker   (tsx src/worker.ts)
 //
-// Execution order per job (idempotency-safe):
-//   1. DB INSERT (ON CONFLICT DO NOTHING) — source of truth for dedup
-//   2. Check run POST  — skipped if a check run with deliveryId already exists
-//   3. PR comment POST — skipped if the <!-- featurepulse:<sha> --> fingerprint
-//                        is already present on the PR
+// In both cases the webhook handler only enqueues jobs and returns 200 — the
+// analysis chain runs asynchronously inside the BullMQ Worker event loop,
+// decoupled from the HTTP request/response cycle. Collapsing into one process
+// does NOT reintroduce the pre-Phase-4 blocking pattern.
 //
-// If the process crashes after step 1 but before step 3, BullMQ retries the
-// job. On retry the DB guard prevents a second row; the GitHub guards prevent
-// duplicate check runs or comments.
+// Job durability is unchanged: jobs are stored in Redis. A process crash and
+// restart will pick up any in-flight job that hadn't been ACKed as completed.
 // ---------------------------------------------------------------------------
 
 import dotenv from 'dotenv';
@@ -191,29 +189,56 @@ ${analysis.summary}
 }
 
 // ---------------------------------------------------------------------------
-// Worker instance
+// startWorker() — create and wire up the BullMQ Worker instance.
+//
+// Exported so src/index.ts can call it after app.listen() for single-process
+// deployment. Safe to call multiple times only if you want multiple concurrent
+// workers (don't — concurrency: 1 is intentional for rate-limit headroom).
 // ---------------------------------------------------------------------------
-const worker = new Worker<PRAnalysisJobData>(
-  'pr-analysis',
-  processAnalysisJob,
-  {
-    connection: createRedisConnection(),
-    // Process one job at a time to stay well within GitHub App rate limits.
-    // Increase concurrency only after validating rate-limit headroom.
-    concurrency: 1,
-  }
-);
+export function startWorker(): Worker<PRAnalysisJobData> {
+  const worker = new Worker<PRAnalysisJobData>(
+    'pr-analysis',
+    processAnalysisJob,
+    {
+      connection: createRedisConnection(),
+      // Process one job at a time to stay well within GitHub App rate limits.
+      // Increase concurrency only after validating rate-limit headroom.
+      concurrency: 1,
+    }
+  );
 
-worker.on('completed', (job) => {
-  console.log(`✅ [worker] Job ${job.id} completed.`);
-});
+  worker.on('completed', (job) => {
+    console.log(`✅ [worker] Job ${job.id} completed.`);
+  });
 
-worker.on('failed', (job, err) => {
-  console.error(`❌ [worker] Job ${job?.id} failed (attempt ${job?.attemptsMade}/${job?.opts.attempts}):`, err.message);
-});
+  worker.on('failed', (job, err) => {
+    console.error(`❌ [worker] Job ${job?.id} failed (attempt ${job?.attemptsMade}/${job?.opts.attempts}):`, err.message);
+  });
 
-worker.on('error', (err) => {
-  console.error('❌ [worker] Worker error:', err);
-});
+  worker.on('error', (err) => {
+    console.error('❌ [worker] Worker error:', err);
+  });
 
-console.log('🔧 FeaturePulse worker started — listening on "pr-analysis" queue.');
+  console.log('🔧 FeaturePulse worker started — listening on "pr-analysis" queue.');
+  return worker;
+}
+
+// ---------------------------------------------------------------------------
+// Standalone entrypoint: `npm run worker` (tsx src/worker.ts directly).
+// When this file is the main module, start the worker immediately.
+// When imported by index.ts, this block is skipped — startWorker() is called
+// explicitly from index.ts instead.
+// ---------------------------------------------------------------------------
+// ESM equivalent of `if (require.main === module)`
+import { fileURLToPath } from 'url';
+import { argv } from 'process';
+
+const isMain = argv[1] === fileURLToPath(import.meta.url) ||
+               // tsx resolves the path before argv[1] is set in some versions;
+               // fall back to checking the filename directly
+               argv[1]?.endsWith('worker.ts') ||
+               argv[1]?.endsWith('worker.js');
+
+if (isMain) {
+  startWorker();
+}
