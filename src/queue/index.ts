@@ -48,16 +48,23 @@ export function createRedisConnection() {
   const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
   const isUpstash = url.includes('upstash.io');
   
-  return new Redis(url, {
+  const redis = new Redis(url, {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
     keepAlive: 10000,
     // Force TLS for Upstash even if they accidentally used redis:// instead of rediss://
     ...(isUpstash && { tls: { rejectUnauthorized: false } }),
     retryStrategy(times) {
+      console.log(`[redis] Reconnecting (attempt ${times})...`);
       return Math.min(times * 200, 2000);
     },
   });
+
+  redis.on('connect', () => console.log(`[redis] Connected to ${isUpstash ? 'Upstash' : 'Redis'}.`));
+  redis.on('ready', () => console.log(`[redis] Connection is READY.`));
+  redis.on('error', (err) => console.error(`[redis] Connection error:`, err.message));
+
+  return redis;
 }
 
 // ---------------------------------------------------------------------------
