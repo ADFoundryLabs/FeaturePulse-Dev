@@ -1,56 +1,26 @@
-# render.yaml — Infrastructure-as-code for Render.com
+# render.yaml — Render Blueprint spec
 # https://render.com/docs/blueprint-spec
 #
-# Deploy with: Render dashboard → New → Blueprint → point at this repo.
-# Or configure the service manually using the values below.
+# Deploy: Render dashboard → New → Blueprint → connect this repo.
 
 services:
   - type: web
     name: featurepulse-backend
     runtime: node
-    # Render sets NODE_VERSION from .node-version / .nvmrc if present,
-    # otherwise defaults to its LTS. Add a .node-version file if you need
-    # to pin a specific version.
     buildCommand: npm install && npm run build
     startCommand: node dist/index.js
-    # Render free tier: one web service instance, auto-sleeps after 15 min idle.
-    # /health is a no-DB, no-Redis endpoint — use UptimeRobot or similar to
-    # ping it every 14 minutes and prevent the instance from sleeping.
     healthCheckPath: /health
-    # Free tier — remove or change to `standard` for always-on.
     plan: free
     envVars:
-      # ── Server ─────────────────────────────────────────────────────────────
-      # Render sets PORT automatically; this is documented here for reference
-      # only. The Express server reads process.env.PORT, which Render injects.
-      - key: PORT
-        generateValue: false   # Render manages this; do not override.
-
-      # ── GitHub App ─────────────────────────────────────────────────────────
       - key: APP_ID
-        sync: false            # Set manually in Render dashboard → Environment
+        sync: false
       - key: PRIVATE_KEY
-        sync: false            # Multi-line PEM — paste verbatim in dashboard
+        sync: false
       - key: WEBHOOK_SECRET
         sync: false
-
-      # ── AI ─────────────────────────────────────────────────────────────────
       - key: OPENROUTER_API_KEY
         sync: false
-
-      # ── Database (Neon — DIRECT connection string) ──────────────────────────
-      # This service is a long-lived process (not serverless), so the direct
-      # endpoint is correct. pg.Pool reuses TCP connections across many queries.
-      # Do NOT use the pooled (-pooler) endpoint here: PgBouncer transaction
-      # mode is incompatible with pg.Pool's named prepared statements.
-      # Format: postgresql://<user>:<pass>@ep-name.region.aws.neon.tech/<db>?sslmode=require
       - key: DATABASE_URL
         sync: false
-
-      # ── Redis (Upstash — standard Redis protocol over TLS) ─────────────────
-      # Format: rediss://default:<password>@<endpoint>.upstash.io:6380
-      # Get this from console.upstash.com → your database → Connect tab.
-      # ioredis reads the rediss:// scheme and enables TLS automatically.
-      # No extra package needed (@upstash/redis is for REST, not BullMQ).
       - key: REDIS_URL
         sync: false
