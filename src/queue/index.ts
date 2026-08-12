@@ -45,10 +45,15 @@ export interface PRAnalysisJobData {
 // during Redis startup.
 // ---------------------------------------------------------------------------
 export function createRedisConnection() {
-  return new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+  const isUpstash = url.includes('upstash.io');
+  
+  return new Redis(url, {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
     keepAlive: 10000,
+    // Force TLS for Upstash even if they accidentally used redis:// instead of rediss://
+    ...(isUpstash && { tls: { rejectUnauthorized: false } }),
     retryStrategy(times) {
       return Math.min(times * 200, 2000);
     },
