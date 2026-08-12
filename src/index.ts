@@ -51,21 +51,13 @@ app.use('/api/webhook', (req, res, next) => {
 
 // 2. Event: PR Opened or Synchronized
 // ---------------------------------------------------------------------------
-// The analysis chain (fetch intent → fetch diff → AI → check run → comment
-// → DB insert) runs inside the BullMQ Worker started below in app.listen().
-//
-// The webhook handler's only job is to enqueue the job and return 200.
-// The Worker is event-driven and never blocks the HTTP request/response cycle
-// — collapsing to one process does NOT reintroduce the pre-Phase-4 pattern.
-//
-// Job durability is unchanged: jobs live in Redis. A crash-and-restart will
-// pick up any in-flight job that hadn't been ACKed as completed.
-//
-// The x-github-delivery header is carried as deliveryId and used as
-// external_id on the GitHub check run so the worker can detect a
-// previously-posted check run on retry (no duplicate check runs).
-// ---------------------------------------------------------------------------
+webhooks.on("pull_request", (event) => {
+    console.log(`\n🕵️ [DEBUG] pull_request event received with action: ${event.payload.action}`);
+});
+
 webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payload, id: deliveryId }) => {
+    console.log(`\n🚀 [DEBUG] Inside pull_request.opened handler for PR #${payload.pull_request.number}`);
+    
     const { repository, pull_request, installation } = payload;
 
     if (!installation) {
@@ -73,21 +65,24 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
         return;
     }
 
-    await prAnalysisQueue.add(
-        // Job name (for BullMQ dashboard visibility; doesn't affect processing)
-        `pr-analysis:${repository.full_name}#${pull_request.number}@${pull_request.head.sha.slice(0, 7)}`,
-        {
-            deliveryId,
-            githubInstallationId: installation.id,
-            owner: repository.owner.login,
-            repo: repository.name,
-            prNumber: pull_request.number,
-            headSha: pull_request.head.sha,
-            prCreatedAt: pull_request.created_at,
-        }
-    );
-
-    console.log(`📥 PR #${pull_request.number} in ${repository.full_name} queued for analysis (delivery ${deliveryId}).`);
+    try {
+        await prAnalysisQueue.add(
+            // Job name (for BullMQ dashboard visibility; doesn't affect processing)
+            `pr-analysis:${repository.full_name}#${pull_request.number}@${pull_request.head.sha.slice(0, 7)}`,
+            {
+                deliveryId,
+                githubInstallationId: installation.id,
+                owner: repository.owner.login,
+                repo: repository.name,
+                prNumber: pull_request.number,
+                headSha: pull_request.head.sha,
+                prCreatedAt: pull_request.created_at,
+            }
+        );
+        console.log(`📥 PR #${pull_request.number} in ${repository.full_name} queued for analysis (delivery ${deliveryId}).`);
+    } catch (err: any) {
+        console.error(`❌ Failed to enqueue PR #${pull_request.number}:`, err);
+    }
 });
 
 // 3. Event: App Installed
