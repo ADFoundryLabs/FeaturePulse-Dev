@@ -26,7 +26,10 @@ app.get('/health', (_req, res) => {
 });
 
 // 1. The Webhook Listener Route (Modified for Raw Body)
-app.use('/api/webhook', express.json({
+app.use('/api/webhook', (req, res, next) => {
+    console.log(`\n\n🎯 [DEBUG] HTTP request received at /api/webhook. Method: ${req.method}`);
+    next();
+}, express.json({
     verify: (req: any, res, buf) => {
         req.rawBody = buf.toString(); 
     }
