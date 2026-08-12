@@ -29,17 +29,16 @@ app.get('/health', (_req, res) => {
 app.use('/api/webhook', (req, res, next) => {
     console.log(`\n\n🎯 [DEBUG] HTTP request received at /api/webhook. Method: ${req.method}`);
     next();
-}, express.json({
-    verify: (req: any, res, buf) => {
-        req.rawBody = buf.toString(); 
-    }
-}), (req: any, res) => {
+}, express.text({ type: 'application/json' }), (req: any, res) => {
     const signature = req.headers["x-hub-signature-256"] as string;
     
+    // With express.text(), req.body is the exact raw string sent by GitHub
+    const rawBody = req.body;
+
     webhooks.verifyAndReceive({
         id: req.headers["x-github-delivery"] as string,
         name: req.headers["x-github-event"] as any,
-        payload: req.rawBody, 
+        payload: rawBody, 
         signature: signature
     }).then(() => {
         console.log(`✅ Webhook verified successfully. Event: ${req.headers["x-github-event"]}`);
