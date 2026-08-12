@@ -38,6 +38,8 @@ app.use('/api/webhook', express.json({
         name: req.headers["x-github-event"] as any,
         payload: req.rawBody, 
         signature: signature
+    }).then(() => {
+        console.log(`✅ Webhook verified successfully. Event: ${req.headers["x-github-event"]}`);
     }).catch((err) => {
         console.error("❌ Webhook verification failed:", err.message);
     });
