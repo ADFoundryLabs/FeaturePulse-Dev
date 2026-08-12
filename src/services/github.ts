@@ -1,7 +1,22 @@
-import { App } from "octokit";
+import { App, Octokit } from "octokit";
+import { throttling } from "@octokit/plugin-throttling";
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// ---------------------------------------------------------------------------
+// Phase 2 Fix 2 (Octokit): @octokit/plugin-throttling
+// Create a custom Octokit class with the throttling plugin baked in, then
+// hand it to the App constructor so every installation client produced by
+// app.getInstallationOctokit() automatically gets rate-limit handling.
+//
+// onRateLimit  → primary rate limit (REST 429 / X-RateLimit-Remaining: 0)
+// onSecondaryRateLimit → abuse / concurrency limits
+//
+// Returning true from these handlers tells the plugin to wait retryAfter
+// seconds and automatically replay the request. We cap at 3 retries each.
+// ---------------------------------------------------------------------------
+const ThrottledOctokit = Octokit.plugin(throttling);
 
 // Initialize the GitHub App "Manager"
 const app = new App({
@@ -10,15 +25,63 @@ const app = new App({
   webhooks: {
     secret: process.env.WEBHOOK_SECRET!,
   },
+  // Pass the throttle-enabled Octokit class with default throttle handlers.
+  // These defaults are inherited by every installation client.
+  Octokit: ThrottledOctokit.defaults({
+    throttle: {
+      onRateLimit: (retryAfter: number, options: { method: string; url: string; request: { retryCount: number } }, octokit: InstanceType<typeof ThrottledOctokit>) => {
+        octokit.log.warn(
+          `GitHub primary rate limit hit for ${options.method} ${options.url}. ` +
+          `Retrying after ${retryAfter}s (attempt ${options.request.retryCount + 1}/3).`
+        );
+        // Retry up to 3 times
+        return options.request.retryCount < 3;
+      },
+      onSecondaryRateLimit: (retryAfter: number, options: { method: string; url: string; request: { retryCount: number } }, octokit: InstanceType<typeof ThrottledOctokit>) => {
+        octokit.log.warn(
+          `GitHub secondary rate limit (abuse) hit for ${options.method} ${options.url}. ` +
+          `Retrying after ${retryAfter}s (attempt ${options.request.retryCount + 1}/3).`
+        );
+        return options.request.retryCount < 3;
+      },
+    },
+  }),
 });
 
 /**
  * getInstallationOctokit
- * Creates an authenticated API client for a specific installation (User/Org)
+ * Creates an authenticated API client for a specific installation (User/Org).
+ * The client inherits the throttling plugin configured above.
  */
 async function getClient(installationId: number) {
   return await app.getInstallationOctokit(installationId);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2 Fix 3: In-memory intent.md cache
+//
+// fetchIntentFile previously issued a fresh getContent request on every
+// pull_request event. On an active repo receiving many events this burns
+// rate-limit quota needlessly (the file changes rarely).
+//
+// Cache design:
+//   - Key:    "<owner>/<repo>" (ref is intentionally omitted — intent.md is
+//             expected to live on the default branch and change infrequently)
+//   - Value:  { content: string | null, expiresAt: number (epoch ms) }
+//   - TTL:    3 minutes — short enough to pick up changes between PRs on an
+//             active repo; long enough to cut duplicate calls in burst traffic
+//
+// The cache is process-local (Map). If/when Phase 4 adds Redis this can be
+// swapped for a shared cache without changing call sites.
+// ---------------------------------------------------------------------------
+const INTENT_CACHE_TTL_MS = 3 * 60 * 1_000; // 3 minutes
+
+interface CacheEntry {
+  content: string | null;
+  expiresAt: number;
+}
+
+const intentCache = new Map<string, CacheEntry>();
 
 /**
  * fetchPullRequestDiff
@@ -42,8 +105,20 @@ export async function fetchPullRequestDiff(installationId: number, owner: string
 /**
  * fetchIntentFile
  * Looks for 'intent.md' in the .featurepulse/ folder or root.
+ * Results are cached in-memory for INTENT_CACHE_TTL_MS to avoid redundant
+ * API calls on back-to-back pull_request events for the same repo.
  */
 export async function fetchIntentFile(installationId: number, owner: string, repo: string) {
+    const cacheKey = `${owner}/${repo}`;
+    const now = Date.now();
+
+    // Return cached result if still valid
+    const cached = intentCache.get(cacheKey);
+    if (cached && now < cached.expiresAt) {
+        console.log(`[intentCache] HIT for ${cacheKey} (expires in ${Math.round((cached.expiresAt - now) / 1000)}s)`);
+        return cached.content;
+    }
+
     const octokit = await getClient(installationId);
     
     // List of paths to check (Priority order)
@@ -59,7 +134,11 @@ export async function fetchIntentFile(installationId: number, owner: string, rep
 
         // GitHub API returns content encoded in Base64
         if ("content" in data) {
-          return Buffer.from(data.content, "base64").toString("utf-8");
+          const content = Buffer.from(data.content, "base64").toString("utf-8");
+          // Store successful fetch in cache
+          intentCache.set(cacheKey, { content, expiresAt: now + INTENT_CACHE_TTL_MS });
+          console.log(`[intentCache] MISS → fetched and cached for ${cacheKey}`);
+          return content;
         }
       } catch (err) {
         // File not found at this path, continue to next
@@ -67,6 +146,10 @@ export async function fetchIntentFile(installationId: number, owner: string, rep
       }
     }
 
+    // No intent file found — cache the null result too so we don't keep
+    // hammering the API for repos that don't have intent.md
+    intentCache.set(cacheKey, { content: null, expiresAt: now + INTENT_CACHE_TTL_MS });
+    console.log(`[intentCache] MISS → no intent.md found, cached null for ${cacheKey}`);
     return null; // No intent file found
 }
 

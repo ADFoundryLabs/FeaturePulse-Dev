@@ -68,6 +68,22 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
                 'WARN',   // maps to 'neutral' conclusion in createCheckRun
                 'No intent.md or .featurepulse/intent.md found in this repository. FeaturePulse analysis was skipped.'
             );
+
+            // Phase 3 telemetry: log the skipped-analysis event with used_intent_file=false
+            // so dashboard queries can distinguish intent-driven runs from skipped ones.
+            const instResultNoIntent = await db.query(
+                `SELECT id FROM installations WHERE github_installation_id=$1`,
+                [installation.id]
+            );
+            if (instResultNoIntent.rows.length === 0) {
+                console.error(`❌ Installation row not found for github_installation_id=${installation.id}. Skipping DB insert.`);
+            } else {
+                await db.query(
+                    `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score, used_intent_file)
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [instResultNoIntent.rows[0].id, pull_request.number, sha, 'WARN', null, false]
+                );
+            }
             return;
         }
         console.log("✅ Found Intent Rules");
@@ -129,10 +145,11 @@ ${analysis.summary}
         if (instResult.rows.length === 0) {
             console.error(`❌ Installation row not found for github_installation_id=${installation.id}. Skipping DB insert to avoid null FK.`);
         } else {
+            // Phase 3 telemetry: include used_intent_file=true (intent was found and used)
             await db.query(
-                `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [instResult.rows[0].id, pull_request.number, sha, analysis.decision, analysis.score]
+                `INSERT INTO analysis_logs (installation_id, pr_number, commit_sha, decision, score, used_intent_file)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [instResult.rows[0].id, pull_request.number, sha, analysis.decision, analysis.score, true]
             );
         }
 
