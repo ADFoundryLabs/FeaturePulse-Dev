@@ -58,7 +58,7 @@ async function processAnalysisJob(job: Job<PRAnalysisJobData>): Promise<void> {
   // BullMQ marks it failed (rather than silently discarding it).
   // -------------------------------------------------------------------------
   const instResult = await db.query(
-    `SELECT id FROM installations WHERE github_installation_id=$1`,
+    `SELECT id, mode FROM installations WHERE github_installation_id=$1`,
     [githubInstallationId]
   );
   if (instResult.rows.length === 0) {
@@ -68,6 +68,7 @@ async function processAnalysisJob(job: Job<PRAnalysisJobData>): Promise<void> {
     );
   }
   const installationDbId: number = instResult.rows[0].id;
+  const mode: string = instResult.rows[0].mode || 'gatekeeper';
 
   // -------------------------------------------------------------------------
   // Fetch intent file and PR diff.
@@ -118,6 +119,11 @@ async function processAnalysisJob(job: Job<PRAnalysisJobData>): Promise<void> {
   const analysis = await analyzeWithAI(intent, diff);
   console.log(`${logPrefix} AI analysis complete: ${analysis.decision} (score ${analysis.score})`);
 
+  let effectiveDecision = analysis.decision;
+  if (mode === 'advisory' && effectiveDecision === 'BLOCK') {
+    effectiveDecision = 'WARN';
+  }
+
   // -------------------------------------------------------------------------
   // Step 1: DB insert — always first, always idempotent.
   // If this succeeds and the process crashes before step 2, a retry finds
@@ -139,40 +145,43 @@ async function processAnalysisJob(job: Job<PRAnalysisJobData>): Promise<void> {
   // GitHub's Checks API stores external_id verbatim; we query it back to
   // detect a previously-posted check run for this exact webhook delivery.
   // -------------------------------------------------------------------------
-  const checkAlreadyExists = await hasCheckRunForDelivery(
-    githubInstallationId, owner, repo, headSha, deliveryId
-  );
-  if (checkAlreadyExists) {
-    console.log(`${logPrefix} Check run already posted for delivery ${deliveryId} — skipping.`);
+  if (mode === 'silent') {
+    console.log(`${logPrefix} Silent mode active — skipping check run and comment.`);
   } else {
-    await createCheckRun(
-      githubInstallationId,
-      owner,
-      repo,
-      headSha,
-      analysis.decision,
-      analysis.summary,
-      deliveryId
+    const checkAlreadyExists = await hasCheckRunForDelivery(
+      githubInstallationId, owner, repo, headSha, deliveryId
     );
-    console.log(`${logPrefix} Check run posted.`);
-  }
+    if (checkAlreadyExists) {
+      console.log(`${logPrefix} Check run already posted for delivery ${deliveryId} — skipping.`);
+    } else {
+      await createCheckRun(
+        githubInstallationId,
+        owner,
+        repo,
+        headSha,
+        effectiveDecision,
+        analysis.summary,
+        deliveryId
+      );
+      console.log(`${logPrefix} Check run posted.`);
+    }
 
-  // -------------------------------------------------------------------------
-  // Step 3: PR comment — guarded by the <!-- featurepulse:<sha> --> fingerprint.
-  // The fingerprint is embedded as a hidden HTML comment so the guard survives
-  // comment edits by users (the fingerprint line isn't visible in rendered MD).
-  // -------------------------------------------------------------------------
-  const commentAlreadyExists = await findFeaturePulseComment(
-    githubInstallationId, owner, repo, prNumber, headSha
-  );
-  if (commentAlreadyExists) {
-    console.log(`${logPrefix} PR comment already posted for SHA ${headSha.slice(0, 7)} — skipping.`);
-  } else {
-    const fingerprint = featurePulseCommentFingerprint(headSha);
-    const commentBody = `${fingerprint}
+    // -------------------------------------------------------------------------
+    // Step 3: PR comment — guarded by the <!-- featurepulse:<sha> --> fingerprint.
+    // The fingerprint is embedded as a hidden HTML comment so the guard survives
+    // comment edits by users (the fingerprint line isn't visible in rendered MD).
+    // -------------------------------------------------------------------------
+    const commentAlreadyExists = await findFeaturePulseComment(
+      githubInstallationId, owner, repo, prNumber, headSha
+    );
+    if (commentAlreadyExists) {
+      console.log(`${logPrefix} PR comment already posted for SHA ${headSha.slice(0, 7)} — skipping.`);
+    } else {
+      const fingerprint = featurePulseCommentFingerprint(headSha);
+      const commentBody = `${fingerprint}
 ## ⚡ FeaturePulse Report
 
-**Decision:** ${analysis.decision} ${analysis.decision === 'APPROVE' ? '✅' : analysis.decision === 'BLOCK' ? '🛑' : '⚠️'}
+**Decision:** ${effectiveDecision} ${effectiveDecision === 'APPROVE' ? '✅' : effectiveDecision === 'BLOCK' ? '🛑' : '⚠️'}
 **Score:** ${analysis.score}/100
 
 **Summary:**
@@ -181,8 +190,9 @@ ${analysis.summary}
 ---
 *Analyzed by FeaturePulse AI*`;
 
-    await postComment(githubInstallationId, owner, repo, prNumber, commentBody);
-    console.log(`${logPrefix} PR comment posted.`);
+      await postComment(githubInstallationId, owner, repo, prNumber, commentBody);
+      console.log(`${logPrefix} PR comment posted.`);
+    }
   }
 
   console.log(`${logPrefix} Job complete.`);

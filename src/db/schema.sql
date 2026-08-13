@@ -60,3 +60,11 @@ CREATE TABLE analysis_logs (
 --     ADD CONSTRAINT uq_analysis_logs_installation_commit
 --     UNIQUE (installation_id, commit_sha);
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Enforcement Mode migration: add check constraint to mode
+--
+-- ALTER TABLE installations
+--     ADD CONSTRAINT chk_installations_mode
+--     CHECK (mode IN ('gatekeeper', 'advisory', 'silent'));
+-- ---------------------------------------------------------------------------
