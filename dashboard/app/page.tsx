@@ -1,5 +1,7 @@
 import { db } from '../lib/db';
 import Link from 'next/link';
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "../lib/auth";
 
 // This makes the page dynamic so it fetches fresh data on every reload
 export const dynamic = 'force-dynamic';
@@ -20,6 +22,26 @@ export default async function Home({
   const params = await searchParams;
   const decisionFilter = typeof params.decision === 'string' ? params.decision : null;
 
+  const session = await getServerSession(authOptions);
+  
+  if (!session) {
+    return null; // Middleware will redirect to login
+  }
+  
+  const installationIds = (session as any).installationIds || [];
+  
+  if (installationIds.length === 0) {
+    return (
+      <main className="min-h-screen bg-gray-50 p-8 flex items-center justify-center">
+        <div className="text-center bg-white p-10 rounded-xl shadow-sm border border-gray-100">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">No Installations Found</h2>
+          <p className="text-gray-600 mb-4">We couldn't find any FeaturePulse installations linked to your GitHub account.</p>
+          <p className="text-sm text-gray-500">If you just installed the app, please <Link href="/api/auth/signout" className="text-blue-600 hover:underline">sign out</Link> and sign back in.</p>
+        </div>
+      </main>
+    );
+  }
+
   let stats: any = { rowCount: 0, rows: [] };
   let logs: any = { rowCount: 0, rows: [] };
   
@@ -33,6 +55,7 @@ export default async function Home({
         SUM(CASE WHEN decision = 'WARN' THEN 1 ELSE 0 END) as warn_count,
         SUM(CASE WHEN human_override = true THEN 1 ELSE 0 END) as override_count
       FROM analysis_logs
+      WHERE installation_id = ANY($1)
     `;
     
     let listQuery = `
@@ -48,11 +71,12 @@ export default async function Home({
         used_intent_file
       FROM analysis_logs
       JOIN installations ON analysis_logs.installation_id = installations.id
+      WHERE analysis_logs.installation_id = ANY($1)
     `;
     
-    const queryParams: any[] = [];
+    const queryParams: any[] = [installationIds];
     if (decisionFilter) {
-      listQuery += ` WHERE decision = $1`;
+      listQuery += ` AND decision = $2`;
       queryParams.push(decisionFilter);
     }
     
@@ -60,7 +84,7 @@ export default async function Home({
 
     // Run both queries in parallel
     [stats, logs] = await Promise.all([
-      db.query(statsQuery),
+      db.query(statsQuery, [installationIds]),
       db.query(listQuery, queryParams)
     ]);
     
