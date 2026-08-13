@@ -134,7 +134,9 @@ export async function analyzeWithAI(intent: string, diff: string): Promise<AIAna
     INSTRUCTIONS:
     1. Analyze if the code aligns with the intent.
     2. Look for security risks or "scope creep" (features not asked for).
-    3. Output a JSON object ONLY. No markdown formatting.
+    3. CRITICAL: If the PRODUCT INTENT specifies exact rules to BLOCK a PR (e.g., counting a specific word), you MUST evaluate them precisely. If violated, output "decision": "BLOCK".
+    4. Output a JSON object ONLY. No markdown formatting.
+
     
     JSON SCHEMA:
     {
