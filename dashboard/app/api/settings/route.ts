@@ -19,7 +19,11 @@ export async function POST(req: Request) {
 
     const allowedInstallationIds = (session as any).installationIds || [];
 
-    if (!allowedInstallationIds.includes(installationId)) {
+    const hasAccess = allowedInstallationIds.some(
+      (id: number | string) => String(id) === String(installationId)
+    );
+
+    if (!hasAccess) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
