@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { Webhooks } from '@octokit/webhooks';
 // FIX 1: Added .js extensions and createCheckRun to imports
-import { fetchPullRequestDiff, fetchIntentFile, postComment, createCheckRun } from './services/github.js';
+import { fetchPullRequestDiff, fetchIntentFile, postComment, createCheckRun, configureBranchProtection } from './services/github.js';
 import { analyzeWithAI } from './services/ai.js';
 import { db } from './db/index.js';
 // BullMQ queue (enqueue-side) + worker consumer (runs in-process on Render free tier)
@@ -88,12 +88,8 @@ webhooks.on(["pull_request.opened", "pull_request.synchronize"], async ({ payloa
 // 3. Event: App Installed
 webhooks.on("installation.created", async ({ payload }) => {
     const { id, account } = payload.installation;
-    
-    // FIX 3: Cast account to 'any' to fix the strict type error about 'login'
     const accountName = (account as any)?.login || "unknown"; 
-
     console.log(`✨ New Installation! ID: ${id}, Account: ${accountName}`);
-
     try {
         await db.query(
             `INSERT INTO installations (github_installation_id, account_name, repo_name, intent_text) 
@@ -104,6 +100,21 @@ webhooks.on("installation.created", async ({ payload }) => {
         console.log("✅ Saved installation to Railway DB");
     } catch (err) {
         console.error("❌ Database Error:", err);
+    }
+    // Automatically protect all repositories included in the initial installation
+    const repos = payload.repositories || [];
+    for (const repo of repos) {
+        await configureBranchProtection(id, accountName, repo.name);
+    }
+});
+// 3.5 Event: Repositories added to an existing installation
+webhooks.on("installation_repositories.added", async ({ payload }) => {
+    const { id, account } = payload.installation;
+    const accountName = (account as any)?.login || "unknown"; 
+    const reposAdded = payload.repositories_added || [];
+    console.log(`✨ Repositories added to installation ${id}`);
+    for (const repo of reposAdded) {
+        await configureBranchProtection(id, accountName, repo.name);
     }
 });
 

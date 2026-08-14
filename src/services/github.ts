@@ -283,3 +283,39 @@ export async function findFeaturePulseComment(
     comment.body?.includes(fingerprint)
   );
 }
+
+/**
+ * configureBranchProtection
+ * Configures branch protection on the repository's default branch to require
+ * the 'FeaturePulse Guard' check run to pass before merging.
+ */
+export async function configureBranchProtection(installationId: number, owner: string, repo: string) {
+    const octokit = await getClient(installationId);
+    
+    try {
+        const { data: repoData } = await octokit.rest.repos.get({
+            owner,
+            repo
+        });
+        const defaultBranch = repoData.default_branch;
+        await octokit.rest.repos.updateBranchProtection({
+            owner,
+            repo,
+            branch: defaultBranch,
+            required_status_checks: {
+                strict: true,
+                checks: [
+                    {
+                        context: 'FeaturePulse Guard',
+                    }
+                ]
+            },
+            enforce_admins: false,
+            required_pull_request_reviews: null,
+            restrictions: null,
+        });
+        console.log(`✅ Branch protection configured for ${owner}/${repo} on branch ${defaultBranch}`);
+    } catch (err: any) {
+        console.error(`❌ Failed to configure branch protection for ${owner}/${repo}:`, err.message);
+    }
+}
