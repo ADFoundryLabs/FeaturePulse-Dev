@@ -304,14 +304,7 @@ export async function configureBranchProtection(installationId: number, owner: s
             branch: defaultBranch,
             required_status_checks: {
                 strict: true,
-                contexts: [
-                    'FeaturePulse Guard'
-                ],
-                checks: [
-                    {
-                        context: 'FeaturePulse Guard',
-                    }
-                ]
+                contexts: ['FeaturePulse Guard'],
             },
             enforce_admins: false,
             required_pull_request_reviews: null,
